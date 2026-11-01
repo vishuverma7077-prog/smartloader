@@ -99,6 +99,20 @@ Build on Linux x86 with 32-bit development libraries and GNU make:
 The test programs are compiled using -m32 -no-pie -nostdlib; the loader and
 launcher are 32-bit, and the loader is built as lib_simpleloader.so.
 
+## Execution attempt on the current host
+
+Attempted on 2026-11-01 using the project Makefile:
+
+- Host: macOS Darwin arm64.
+- make clean: completed successfully.
+- make: stopped while compiling the loader because this host's Apple SDK does
+  not provide the Linux header elf.h (reported from loader/loader.h:7).
+- fib and sum: not run; the shared loader did not build.
+
+This is an environment limitation, not a Linux test result. Run the build and
+both executables on Linux x86 with 32-bit development support before filling
+in the results below.
+
 ## Test results template
 
 Run each command on the required Linux x86 environment and record the observed
@@ -122,4 +136,4 @@ statistics during the demo/submission.
   - Built `loader_cleanup()` to unmap all tracked pages via `munmap()`, free dynamic buffers, and restore previous signal handlers. Configured build automation across all subdirectories and conducted test verification on Linux/WSL for `fib` and `sum`.
 ## Private GitHub repository
 
-Private repository link: https://github.com/ACCOUNT/PRIVATE_REPOSITORY
+Private repository link: https://github.com/vishuverma7077-prog/smartloader
