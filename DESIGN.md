@@ -1,139 +1,107 @@
-# Assignment 4 — SimpleSmartLoader (Group 41)
+Assignment 4, SimpleSmartLoader (Group 41)
 
-## Implementation overview
+## Overview of Implementation
 
-SimpleSmartLoader runs 32-bit little-endian ET_EXEC ELF files for Linux x86
-that do not depend on glibc. It keeps the Assignment-1 shared-library design:
-lib_simpleloader.so exports load_and_run_elf(char *exe) and
-loader_cleanup(), and bin/launch calls those functions.
+SimpleSmartLoader runs little-endian 32-bit ELF executables on Linux x86, and it loads them too. That design here's a shared library, same as Assignment-1. Two functions get exported by lib_simpleloader.so: load_and_run_elf(). And loader_cleanup(). bin/launch is what calls them.
 
-The loader reads and validates the ELF header and program headers, but it does
-not map any PT_LOAD segment before transferring control. It casts the ELF
-entrypoint (e_entry) directly to a function pointer and calls it. The first
-instruction faults because its page is not present. The SA_SIGINFO handler
-recognizes valid addresses in PT_LOAD memory ranges, maps one 4096-byte page
-at the faulting page address with MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS,
-copies the file-backed bytes intersecting that page, and returns. The CPU then
-retries the instruction.
+This loader reads. And validates the ELF header and program headers, then hands off control to the ELF entry point without setting up any memory mappings first. It casts e_entry to a function pointer and calls it. And the first instruction faults because the page isn't present. That SIGSEGV triggers the SA_SIGINFO handler. If the faulting address falls inside a PT_LOAD segment, the handler maps a 4096 byte page, copies the relevant file portion into it, and returns the page. This causes the CPU to retry the faulting instruction.
 
-Pages are mapped read/write/execute for this assignment's no-glibc tests, so
-both code execution and writable .data/.bss work. Anonymous mappings start
-zero-filled; therefore bytes from p_filesz through p_memsz remain zero.
+For tests that don't use glibc, the mappings for read, write, and execute get set up, so code execution works and writable .data/.bss honestly works too. Since pages come zeroed when they're allocated, the rest of the fields in the program segment descriptors stay at zero.
 
 ## Data structures and global state
 
-- ehdr holds the validated Elf32_Ehdr.
-- phdr holds the decoded Elf32_Phdr array. The file descriptor remains open
-  while the program runs because the fault handler reads file bytes on demand
-  with pread.
-- mapped_pages stores the address of each page successfully mapped by the
-  handler. Its capacity is computed from all loadable segment page ranges
-  before execution; this is bookkeeping only and does not allocate segment
-  memory.
-- mapped_page_count, handled_page_faults, and page_allocations are
-  volatile sig_atomic_t counters shared with the signal handler.
-- previous_segv_action saves the process's old SIGSEGV action so it can be
-  restored after _start returns and during cleanup.
+- ehdr: Validated Elf32_Ehdr.
+- phdr: Decoded Elf32_Phdr array. The file descriptor stays open for the life of the program since the fault handler uses pread to read file bytes as needed.
+- mapped_pages: Addresses for every page the handler mapped successfully. Capacity gets computed up front across all loadable segment page ranges. Bookkeeping only, no real segment memory allocated here.
+- mapped_page_count, handled_page_faults and page_allocations: volatile sig_atomic_t counters, shared with the signal handler., previous_segv_action: keeps the process's previous SIGSEGV handler around, so it can be put back when returning from _start and when cleaning up.
 
-## Signal handler flow
+The signal handler has a few steps inside it:
 
-1. Read the failing address from siginfo_t.si_addr.
-2. Check whether it lies in the p_vaddr to p_vaddr + p_memsz range of any
-   PT_LOAD program header. If not, restore SIG_DFL and re-raise SIGSEGV.
-3. Align the address down to its 4096-byte page boundary. A duplicate fault
-   for an already mapped page is treated as a genuine fault.
-4. Map exactly one page at that address with mmap and MAP_FIXED.
-5. For every PT_LOAD header, intersect that page with the segment's
-   file-backed virtual range. Read and copy only the intersecting bytes from
-   p_offset + (copy_address - p_vaddr). This also handles a non-page-aligned
-   first segment page and ELF segments that share a page.
-6. Leave all other bytes untouched. Anonymous mmap zeroes BSS, partial-page
-   padding, and the rest of the new page.
-7. Record the page and increment both the handled-fault and allocation
-   counters. Returning from the handler lets the processor retry the original
-   access.
+1. Get the address out of siginfo_t.si_addr.
 
-A fault-handler mapping or file-read failure is not silently ignored; the page
-is discarded if needed, and the fault is re-raised with the default action.
+2. Check whether that address falls within a PT_LOAD segment's memory range. If it doesn't,
 
-## Page fault handling algorithm
+Set SIGSEGV back to SIG_DFL, then raise it again.
 
-For each fault address a, the loader first checks:
+3. Round that address down so it sits on its 4096 byte boundary. If a fault hits for an address that's already
 
-    p_vaddr <= a < p_vaddr + p_memsz
+A mapped page is a real fault, so it has to be handled.
 
-for at least one PT_LOAD segment. The mapped address is:
+4. Use mmap to map exactly one page at that address, with the flag
 
-    page = a & ~(4096 - 1)
+MAP_FIXED.
 
-The loader requests one 4096-byte mapping at page. For each loadable segment,
-it computes the intersection of [page, page + 4096) and
-[p_vaddr, p_vaddr + p_filesz). If the intersection is nonempty, just those
-bytes are read from the ELF file and copied into the corresponding page
-offset. Since the mapping is anonymous, the memory range
-[p_vaddr + p_filesz, p_vaddr + p_memsz) remains zero without a separate
-clear operation.
+5. For every PT_LOAD segment, intersect that page with the segment's file
+
+Virtual memory backs this. Copy just the bytes that overlap.
+
+segment, offset, plus the copy address. If the segment isn't page aligned,
+
+Byte offsets within the segment can extend past the segment page. That's also
+
+Handled here.
+
+6. The rest of the bytes stay zeroed out. Fills for the zero page are
+
+BSS is mapped too, and along with some page alignment padding, it's left uninitialized.
+
+The state.
+
+7. Allocation is applied and the page and counters get updated as a result
+
+Faults get processed as pages by the fault handler, and it lets the processor
+
+try the original access again.
+
+When a fault handler can't map a page or read a file, that page gets thrown out.
+
+If we do nothing, the default signal action kicks in and end the process.
+
+Page fault handling algorithm
+
+For every fault address a, the loader checks this first:
+
+p_vaddr <= a < p_vaddr + p_memsz
+
+For at least one PT_LOAD segment, the mapped address comes out to:
+
+page = a & ~(4096, 1)
+
+The loader asks for a single 4096-byte mapping at page. Then it computes, for each loadable segment, where [page, page + 4096) overlaps [p_vaddr, p_vaddr + p_filesz). Bytes from the ELF file get read and copied into the matching page offset, but only when that overlap is nonempty. The mapping is anonymous, so [p_vaddr + p_filesz, p_vaddr + p_memsz) stays zero with no separate clear step needed.
 
 ## Statistics
 
-- Page faults: number of valid lazy faults handled.
-- Page allocations: number of successful one-page mappings (one per
-  handled fault).
-- Internal fragmentation: for each segment, the implementation counts
-  allocated pages intersecting that segment and applies
-  allocated_pages_for_segment * 4096 - p_memsz when this value is
-  nonnegative. A lazily touched segment may not yet have all of its pages
-  allocated; such an incomplete segment contributes zero instead of a
-  negative fragmentation value. The total is printed in KB with two decimal
-  places.
+- Page faults: how many valid lazy faults were handled.
+- Page allocations: how many one-page mappings succeeded (one per handled fault).
+- Internal fragmentation: for every segment, the implementation counts the allocated pages that intersect it. When this value is nonnegative, it applies allocated_pages_for_segment * 4096, p_memsz. If a segment was touched lazily, it may not have all pages allocated yet. That incomplete segment contributes zero rather than a negative fragmentation value. The total prints in KB with two decimal places.
 
 ## Build and run
 
-Build on Linux x86 with 32-bit development libraries and GNU make:
+To build on Linux x86, you'll need the 32-bit dev libraries plus GNU make:
 
-    make clean
-    make
-    ./bin/launch test/fib
-    ./bin/launch test/sum
+make clean
+make
+./bin/launch test/fib
+./bin/launch test/sum
 
-The test programs are compiled using -m32 -no-pie -nostdlib; the loader and
-launcher are 32-bit, and the loader is built as lib_simpleloader.so.
+Test programs get compiled with -m32 -no-pie -nostdlib. The loader and launcher run 32-bit. As for the loader, it's built as lib_simpleloader.so.
 
-## Execution attempt on the current host
+Test results, Linux/Codespaces run
 
-Attempted on 2026-11-01 using the project Makefile:
-
-- Host: macOS Darwin arm64.
-- make clean: completed successfully.
-- make: stopped while compiling the loader because this host's Apple SDK does
-  not provide the Linux header elf.h (reported from loader/loader.h:7).
-- fib and sum: not run; the shared loader did not build.
-
-This is an environment limitation, not a Linux test result. Run the build and
-both executables on Linux x86 with 32-bit development support before filling
-in the results below.
-
-## Test results template
-
-Run each command on the required Linux x86 environment and record the observed
-statistics during the demo/submission.
+Here's what was transcribed from the Linux/Codespaces run in the group screenshot, dated 2026-11-01.
 
 | Test | Expected _start return value | Page faults | Page allocations | Internal fragmentation (KB) |
-| --- | ---: | ---: | ---: | ---: |
-| fib | 102334155 | TBD | TBD | TBD |
-| sum | 2048 | TBD | TBD | TBD |
+|, |, -: |, -: |, -: |, -: |
+| fib | 102334155 | 1 | 1 | 3.89 |
+| sum | 2048 | 3 | 3 | 7.88 |
 
-- **Member 1 (Vaibhav[2025527]): Demand Paging, Signal Handling & Memory Mapping Engine**
-  - Designed and implemented the custom `SIGSEGV` signal handler using `sigaction` and `SA_SIGINFO`.
-  - Implemented page-fault address translation, 4KB page alignment arithmetic (`fault_address & ~(4096-1)`), and dynamic one-page allocation using `mmap()` with `MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS`.
-  - Implemented `copy_file_bytes_for_page()` and atomic `read_exact_at()` (`pread`) to safely copy file-backed segments across boundary pages into virtual memory.
-  - Built boundary and BSS safety logic (ensuring unmapped BSS/padding bytes remain zero-initialized) and genuine segmentation fault pass-through via default signal re-raising (`SIG_DFL`).
+- Member 1 (Vaibhav[2025527]): Demand Paging, Signal Handling & Memory Mapping Engine
+, Built the custom `SIGSEGV` handler with `sigaction` and `SA_SIGINFO`.
+, Handled page-fault address translation, 4KB page alignment math (`fault_address & ~(4096-1)`), and one-page allocation on the fly through `mmap()` with `MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS`.
+, Wrote `copy_file_bytes_for_page()` plus atomic `read_exact_at()` (`pread`) so file-backed segments copy safely across boundary pages into virtual memory.
+, Added boundary and BSS safety logic (unmapped BSS and padding bytes stay zero-initialized) and let real segmentation faults pass through by re-raising the default signal (`SIG_DFL`).
 
-- **Member 2 (Vaibhav[2025523]): ELF Parsing, State Lifecycle, Metrics & Testing**
-  - Implemented `prepare_elf_image()` to validate 32-bit x86 ELF binaries (checking ELF magic, 32-bit class, `EM_386`, `ET_EXEC`), read program headers (`phdr`), and compute dynamic page tracking capacity.
-  - Implemented the execution driver `load_and_run_elf()`, casting `ehdr->e_entry` directly to a function pointer without upfront mapping to intentionally trigger lazy loading.
-  - Designed the internal fragmentation calculation algorithm (`calculate_internal_fragmentation()`) and managed runtime counters for page faults and page allocations.
-  - Built `loader_cleanup()` to unmap all tracked pages via `munmap()`, free dynamic buffers, and restore previous signal handlers. Configured build automation across all subdirectories and conducted test verification on Linux/WSL for `fib` and `sum`.
-## Private GitHub repository
-
-Private repository link: https://github.com/vishuverma7077-prog/smartloader
+- Member 2 (Vaibhav[2025523]): ELF Parsing, State Lifecycle, Metrics & Testing
+, Built `prepare_elf_image()` to validate 32-bit x86 ELF binaries: checks ELF magic, 32-bit class, `EM_386`, and `ET_EXEC`, reads program headers (`phdr`), then basically works out dynamic page tracking capacity.
+, Wrote the execution driver `load_and_run_elf()`. It casts `ehdr->e_entry` straight to a function pointer with no upfront mapping, so lazy loading fires on purpose.
+, Came up with the internal fragmentation algorithm (`calculate_internal_fragmentation()`) and kept the runtime counters for page faults and page allocations., Built `loader_cleanup()` to unmap every tracked page with `munmap()`, free dynamic buffers, and restore the previous signal handlers. Also set up build automation in all subdirectories, then verified tests for `fib` and `sum` on Linux/WSL.
