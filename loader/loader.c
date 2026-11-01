@@ -39,3 +39,12 @@ static int restore_previous_segv_action(void){
     if(sigaction(SIGSEGV, &previous_segv_action, NULL)<0)return -1;
     previous_action_saved=0;return 0;
 }
+//Set SIGSEGV to its default action and re-raise the fault.
+static void re_raise_default_segv(void){
+    struct sigaction default_action;
+    memset(&default_action, 0, sizeof(default_action));
+    default_action.sa_handler = SIG_DFL;
+    sigemptyset(&default_action.sa_mask);
+    if(sigaction(SIGSEGV, &default_action, NULL)<0)_exit(128 + SIGSEGV);
+    if(raise(SIGSEGV)!=0)_exit(128+SIGSEGV);
+}
