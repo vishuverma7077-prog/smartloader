@@ -91,6 +91,7 @@ static int copy_file_bytes_for_page(uintptr_t page_address, void *page_memory){
         if (read_exact_at(fd, destination, copy_length, source_offset)<0)return -1;
     }return 0;
 }
+
 // Map the page containing the fault address so the CPU can retry the instruction.
 static void lazy_page_fault_handler(int signal_number, siginfo_t *information,void *machine_context){
     uintptr_t fault_address;
@@ -109,6 +110,22 @@ static void lazy_page_fault_handler(int signal_number, siginfo_t *information,vo
         handled_page_faults >= SIG_ATOMIC_MAX) {
         re_raise_default_segv();
     }
+
+// Map an anonymous RWX page at the ELF address; zero-filled memory supplies BSS before file data is copied. */
+    mapped_page = mmap((void *)page_address, SMART_PAGE_SIZE,
+                       PROT_READ | PROT_WRITE | PROT_EXEC,
+                       MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if(mapped_page == MAP_FAILED || mapped_page != (void *)page_address)re_raise_default_segv();
+    if(copy_file_bytes_for_page(page_address, mapped_page)<0){
+        (void)munmap(mapped_page, SMART_PAGE_SIZE);re_raise_default_segv();
+    }
+    // Record the page after it has been fully initialized.
+    mapped_pages[mapped_page_count] = page_address;
+    ++mapped_page_count;
+    ++handled_page_faults;
+    ++page_allocations;
+}
+
 // Check the ELF headers and load segments before execution.
 static int prepare_elf_image(void){
     struct stat file_status;
@@ -190,6 +207,18 @@ static int prepare_elf_image(void){
     page_allocations = 0;
     return 0;
 }
+
+// Register the handler to receive details about each SIGSEGV.
+static int install_page_fault_handler(void){
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_sigaction = lazy_page_fault_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_SIGINFO;
+    if(sigaction(SIGSEGV, &action, &previous_segv_action) < 0)return -1;
+    previous_action_saved = 1;
+    return 0;
+}
 static uint64_t calculate_internal_fragmentation(void){
     uint64_t total_fragmentation = 0;int i;
     for(i =0;i<(int)ehdr->e_phnum;++i){
@@ -235,6 +264,7 @@ void loader_cleanup(void){
         fd = -1;
     }
 }
+
 // Read the ELF metadata, then run its entry point and load pages on demand.
 void load_and_run_elf(char *exe){
     typedef int (*elf_entry_function)(void);
