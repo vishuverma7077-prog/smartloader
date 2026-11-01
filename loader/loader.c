@@ -190,3 +190,29 @@ static int prepare_elf_image(void){
     page_allocations = 0;
     return 0;
 }
+static uint64_t calculate_internal_fragmentation(void){
+    uint64_t total_fragmentation = 0;int i;
+    for(i =0;i<(int)ehdr->e_phnum;++i){
+        uint64_t segment_start;
+        uint64_t segment_end;
+        uint64_t first_page;
+        uint64_t rounded_end;
+        uint64_t allocated_pages_for_segment=0;
+        uint64_t allocated_bytes;
+        sig_atomic_t page_index;
+        if(phdr[i].p_type != PT_LOAD || phdr[i].p_memsz == 0)continue;
+        segment_start = (uint64_t)phdr[i].p_vaddr;
+        segment_end = segment_start + (uint64_t)phdr[i].p_memsz;
+        first_page = segment_start &
+            ~((uint64_t)SMART_PAGE_SIZE - 1U);
+        rounded_end = (segment_end + SMART_PAGE_SIZE - 1U) &
+            ~((uint64_t)SMART_PAGE_SIZE - 1U);
+
+        for(page_index=0;page_index < mapped_page_count; ++page_index){
+            uint64_t address=(uint64_t)mapped_pages[page_index];
+            if (address>=first_page && address < rounded_end)++allocated_pages_for_segment;
+        }
+        allocated_bytes = allocated_pages_for_segment * SMART_PAGE_SIZE;
+        if(allocated_bytes > phdr[i].p_memsz)total_fragmentation += allocated_bytes - phdr[i].p_memsz;
+    }return total_fragmentation;
+}
