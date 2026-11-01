@@ -109,15 +109,17 @@ statistics during the demo/submission.
 | fib | 102334155 | TBD | TBD | TBD |
 | sum | 2048 | TBD | TBD | TBD |
 
-## Group 41 member contributions
+- **Member 1 (Vaibhav[2025527]): Demand Paging, Signal Handling & Memory Mapping Engine**
+  - Designed and implemented the custom `SIGSEGV` signal handler using `sigaction` and `SA_SIGINFO`.
+  - Implemented page-fault address translation, 4KB page alignment arithmetic (`fault_address & ~(4096-1)`), and dynamic one-page allocation using `mmap()` with `MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS`.
+  - Implemented `copy_file_bytes_for_page()` and atomic `read_exact_at()` (`pread`) to safely copy file-backed segments across boundary pages into virtual memory.
+  - Built boundary and BSS safety logic (ensuring unmapped BSS/padding bytes remain zero-initialized) and genuine segmentation fault pass-through via default signal re-raising (`SIG_DFL`).
 
-Fill in the names, student IDs, and actual contributions of every group member
-before submission. Add or remove rows to match the actual group roster.
-
-- Member 1: Name [fill in]; Student ID [fill in]; contribution [fill in].
-- Member 2: Name [fill in]; Student ID [fill in]; contribution [fill in].
-- Member 3: Name [fill in]; Student ID [fill in]; contribution [fill in].
-
+- **Member 2 (Vaibhav[2025523]): ELF Parsing, State Lifecycle, Metrics & Testing**
+  - Implemented `prepare_elf_image()` to validate 32-bit x86 ELF binaries (checking ELF magic, 32-bit class, `EM_386`, `ET_EXEC`), read program headers (`phdr`), and compute dynamic page tracking capacity.
+  - Implemented the execution driver `load_and_run_elf()`, casting `ehdr->e_entry` directly to a function pointer without upfront mapping to intentionally trigger lazy loading.
+  - Designed the internal fragmentation calculation algorithm (`calculate_internal_fragmentation()`) and managed runtime counters for page faults and page allocations.
+  - Built `loader_cleanup()` to unmap all tracked pages via `munmap()`, free dynamic buffers, and restore previous signal handlers. Configured build automation across all subdirectories and conducted test verification on Linux/WSL for `fib` and `sum`.
 ## Private GitHub repository
 
 Private repository link: https://github.com/ACCOUNT/PRIVATE_REPOSITORY
