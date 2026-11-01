@@ -109,3 +109,84 @@ static void lazy_page_fault_handler(int signal_number, siginfo_t *information,vo
         handled_page_faults >= SIG_ATOMIC_MAX) {
         re_raise_default_segv();
     }
+// Check the ELF headers and load segments before execution.
+static int prepare_elf_image(void){
+    struct stat file_status;
+    uint64_t program_header_table_end;
+    size_t page_capacity = 0;
+    int has_entry_segment = 0;
+    int i;
+
+    if(fstat(fd, &file_status)<0)return -1;
+    if(file_status.st_size < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    executable_file_size = (uint64_t)file_status.st_size;
+    if (executable_file_size < sizeof(*ehdr)){
+        errno = ENOEXEC;
+        return -1;
+    }
+    if (read_exact_at(fd, ehdr, sizeof(*ehdr), 0) < 0)return -1;
+
+    if (ehdr->e_ident[EI_MAG0] != ELFMAG0 ||
+        ehdr->e_ident[EI_MAG1] != ELFMAG1 ||
+        ehdr->e_ident[EI_MAG2] != ELFMAG2 ||
+        ehdr->e_ident[EI_MAG3] != ELFMAG3 ||
+        ehdr->e_ident[EI_CLASS] != ELFCLASS32 ||
+        ehdr->e_ident[EI_DATA] != ELFDATA2LSB ||
+        ehdr->e_ident[EI_VERSION] != EV_CURRENT || ehdr->e_version != EV_CURRENT ||
+        ehdr->e_type != ET_EXEC || ehdr->e_machine != EM_386 ||
+        ehdr->e_ehsize != sizeof(*ehdr) || ehdr->e_phnum == 0 ||
+        ehdr->e_phentsize < sizeof(Elf32_Phdr)) {
+        errno = ENOEXEC;
+        return -1;
+    }
+    program_header_table_end = (uint64_t)ehdr->e_phoff +(uint64_t)ehdr->e_phnum * (uint64_t)ehdr->e_phentsize;
+    if (program_header_table_end > executable_file_size){
+        errno = ENOEXEC;return -1;
+    }
+    phdr = calloc(ehdr->e_phnum, sizeof(*phdr));
+    if (phdr == NULL)return -1;
+    for (i = 0; i < (int)ehdr->e_phnum; ++i){
+        uint64_t header_offset = (uint64_t)ehdr->e_phoff + (uint64_t)i * (uint64_t)ehdr->e_phentsize;
+        if (read_exact_at(fd, &phdr[i], sizeof(phdr[i]), header_offset) < 0)return -1;
+        if (phdr[i].p_type == PT_LOAD) {
+            uint64_t segment_start = (uint64_t)phdr[i].p_vaddr;
+            uint64_t segment_end =segment_start + (uint64_t)phdr[i].p_memsz;
+            uint64_t first_page;
+            uint64_t rounded_end;
+            uint64_t segment_pages;
+
+            if (phdr[i].p_filesz > phdr[i].p_memsz ||(uint64_t)phdr[i].p_offset + phdr[i].p_filesz >executable_file_size ||
+            segment_end > UINT64_C(0x100000000)){
+                errno = ENOEXEC;
+                return -1;
+            }
+            if((uint64_t)ehdr->e_entry >= segment_start && (uint64_t)ehdr->e_entry < segment_end)has_entry_segment = 1;
+            if(phdr[i].p_memsz == 0)continue;
+            first_page = segment_start &
+                ~((uint64_t)SMART_PAGE_SIZE - 1U);
+            rounded_end = (segment_end + SMART_PAGE_SIZE - 1U) &
+                ~((uint64_t)SMART_PAGE_SIZE - 1U);
+            segment_pages = (rounded_end - first_page) / SMART_PAGE_SIZE;
+            if(segment_pages > SIZE_MAX - page_capacity){
+                errno=EOVERFLOW;return -1;
+            }page_capacity += (size_t)segment_pages;
+        }
+    }
+    if(!has_entry_segment || page_capacity == 0 ||page_capacity > (size_t)SIG_ATOMIC_MAX){
+        errno = ENOEXEC;
+        return -1;
+    }
+    if(page_capacity > SIZE_MAX / sizeof(*mapped_pages)){
+        errno = EOVERFLOW;return -1;
+    }
+    mapped_pages = malloc(page_capacity * sizeof(*mapped_pages));
+    if(mapped_pages == NULL)return -1;
+    mapped_page_capacity = page_capacity;
+    mapped_page_count = 0;
+    handled_page_faults = 0;
+    page_allocations = 0;
+    return 0;
+}
