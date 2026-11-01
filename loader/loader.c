@@ -48,3 +48,15 @@ static void re_raise_default_segv(void){
     if(sigaction(SIGSEGV, &default_action, NULL)<0)_exit(128 + SIGSEGV);
     if(raise(SIGSEGV)!=0)_exit(128+SIGSEGV);
 }
+///Check whether the address falls within a PT_LOAD segment.
+static int address_belongs_to_load_segment(uintptr_t address){
+    int i;
+    for(i = 0; i<(int)ehdr->e_phnum; ++i) {
+        uint64_t start;
+        uint64_t end;
+        if (phdr[i].p_type != PT_LOAD || phdr[i].p_memsz == 0)continue;
+        start=(uint64_t)phdr[i].p_vaddr;
+        end=start+(uint64_t)phdr[i].p_memsz;
+        if((uint64_t)address >= start && (uint64_t)address <end)return 1;
+    }return 0;
+}
