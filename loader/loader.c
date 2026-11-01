@@ -235,3 +235,51 @@ void loader_cleanup(void){
         fd = -1;
     }
 }
+// Read the ELF metadata, then run its entry point and load pages on demand.
+void load_and_run_elf(char *exe){
+    typedef int (*elf_entry_function)(void);
+    elf_entry_function entry_function;
+    int user_result;
+    uint64_t fragmentation_bytes;
+    loader_cleanup();
+    if(exe==NULL){
+        fprintf(stderr, "Error: executable path is NULL\n");
+        exit(EXIT_FAILURE);
+    }
+    fd = open(exe, O_RDONLY);
+    if(fd <0){
+        perror("open executable");
+        loader_cleanup();
+        exit(EXIT_FAILURE);
+    }
+    ehdr = malloc(sizeof(*ehdr));
+    if (ehdr == NULL) {
+        perror("malloc ELF header");
+        loader_cleanup();
+        exit(EXIT_FAILURE);
+    }
+    if (prepare_elf_image() < 0) {
+        perror("invalid or unreadable ELF32 executable");
+        loader_cleanup();
+        exit(EXIT_FAILURE);
+    }
+    if (install_page_fault_handler() < 0) {
+        perror("sigaction");
+        loader_cleanup();
+        exit(EXIT_FAILURE);
+    }
+    // Start at the ELF entry point; the page fault handler maps its page on first access.
+    entry_function= (elf_entry_function)(uintptr_t)ehdr->e_entry;
+    user_result =entry_function();
+    if (restore_previous_segv_action() < 0) {
+        perror("sigaction restore");
+        loader_cleanup();
+        exit(EXIT_FAILURE);
+    }
+    fragmentation_bytes= calculate_internal_fragmentation();
+    printf("User _start return value = %d\n", user_result);
+    printf("Total page faults: %d\n", (int)handled_page_faults);
+    printf("Total page allocations: %d\n", (int)page_allocations);
+    printf("Total internal fragmentation: %.2f KB\n",
+           (double)fragmentation_bytes / 1024.0);
+}
