@@ -91,3 +91,21 @@ static int copy_file_bytes_for_page(uintptr_t page_address, void *page_memory){
         if (read_exact_at(fd, destination, copy_length, source_offset)<0)return -1;
     }return 0;
 }
+// Map the page containing the fault address so the CPU can retry the instruction.
+static void lazy_page_fault_handler(int signal_number, siginfo_t *information,void *machine_context){
+    uintptr_t fault_address;
+    uintptr_t page_address;
+    void *mapped_page;
+    (void)signal_number;
+    (void)machine_context;
+    if (information == NULL || ehdr == NULL || phdr == NULL || fd < 0)re_raise_default_segv();
+    fault_address = (uintptr_t)information->si_addr;
+    if (!address_belongs_to_load_segment(fault_address))re_raise_default_segv();
+    page_address = fault_address & ~((uintptr_t)SMART_PAGE_SIZE - 1U);
+    if (page_is_already_mapped(page_address) ||
+        mapped_page_count < 0 ||
+        (size_t)mapped_page_count >= mapped_page_capacity ||
+        page_allocations >= SIG_ATOMIC_MAX ||
+        handled_page_faults >= SIG_ATOMIC_MAX) {
+        re_raise_default_segv();
+    }
