@@ -60,3 +60,9 @@ static int address_belongs_to_load_segment(uintptr_t address){
         if((uint64_t)address >= start && (uint64_t)address <end)return 1;
     }return 0;
 }
+//Check whether this page is already mapped.
+static int page_is_already_mapped(uintptr_t page_address){
+    sig_atomic_t i;
+    for (i = 0; i < mapped_page_count; ++i){if (mapped_pages[i] == page_address)return 1;
+    }return 0;
+}
