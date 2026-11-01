@@ -216,3 +216,22 @@ static uint64_t calculate_internal_fragmentation(void){
         if(allocated_bytes > phdr[i].p_memsz)total_fragmentation += allocated_bytes - phdr[i].p_memsz;
     }return total_fragmentation;
 }
+// Unmap loaded pages and release the loader's metadata and tracking resources. */
+void loader_cleanup(void){
+    sig_atomic_t i;
+    if(restore_previous_segv_action()<0){
+        perror("sigaction restore");
+        //If restoration fails, leave the handler state and resources intact.
+        return;
+    }
+    for (i = 0; i < mapped_page_count; ++i){if (munmap((void *)mapped_pages[i], SMART_PAGE_SIZE) < 0)perror("munmap");}
+    free(mapped_pages);mapped_pages = NULL;
+    mapped_page_capacity =0;mapped_page_count= 0;
+    handled_page_faults= 0;page_allocations =0;
+    free(phdr);phdr = NULL;free(ehdr);ehdr = NULL;
+    executable_file_size = 0;
+    if(fd >=0){
+        if(close(fd) < 0)perror("close");
+        fd = -1;
+    }
+}
